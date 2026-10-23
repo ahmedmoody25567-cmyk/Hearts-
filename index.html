@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>قلب الجزيئات الزرقاء 3D</title>
+<style>
+:root{color-scheme:dark}
+html,body{height:100%;margin:0;background:#000;overflow:hidden}
+canvas{display:block;touch-action:none}
+p{position:fixed;left:0;right:0;bottom:calc(20px + env(safe-area-inset-bottom,0px));margin:0;text-align:center;font:14px/1.4 system-ui,sans-serif;color:#5b86a8;pointer-events:none}
+</style>
+<script type="importmap">
+{"imports":{
+"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+"three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<p>اسحب للتدوير · المس القلب عشان يتفجّر</p>
+<script type="module">
+import * as THREE from 'three';
+import {EffectComposer} from 'three/addons/postprocessing/EffectComposer.js';
+import {RenderPass} from 'three/addons/postprocessing/RenderPass.js';
+import {AfterimagePass} from 'three/addons/postprocessing/AfterimagePass.js';
+import {UnrealBloomPass} from 'three/addons/postprocessing/UnrealBloomPass.js';
+import {OutputPass} from 'three/addons/postprocessing/OutputPass.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+const calm=matchMedia('(prefers-reduced-motion: reduce)').matches;
+const N=innerWidth<700?40000:100000;
+
+const renderer=new THREE.WebGLRenderer({antialias:false});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+document.body.prepend(renderer.domElement);
+const scene=new THREE.Scene();
+const camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,.1,400);
+const target=new THREE.Vector3(0,-3,0);
+function fit(){
+  const a=innerWidth/innerHeight,d=Math.max(50,21/(a*Math.tan(Math.PI/7.2)));
+  camera.aspect=a;camera.position.set(0,d*.12,d);camera.updateProjectionMatrix();
+}
+fit();
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.copy(target);controls.enablePan=false;controls.enableDamping=true;
+controls.autoRotate=!calm;controls.autoRotateSpeed=1.4;controls.minDistance=30;controls.maxDistance=140;
+
+// ---- particles
+const home=new Float32Array(N*3),R=new Float32Array(N*4),C=new Float32Array(N*3),Sz=new Float32Array(N);
+const pal=[0x00b4ff,0x1e90ff,0x4db8ff,0x0a74e6,0xbfe9ff].map(h=>new THREE.Color(h));
+for(let i=0;i<N;i++){
+  const t=Math.random()*Math.PI*2;
+  let s=Math.sqrt(Math.random()),z;
+  if(Math.random()<.15){s=1-Math.random()*.02;z=(Math.random()-.5)*1.5;}
+  else{
+    const zm=6.5*Math.sqrt(1-s*s);
+    z=Math.random()<.6?(Math.random()<.5?-zm:zm)*(.97+.03*Math.random()):(Math.random()*2-1)*zm;
+  }
+  home[i*3]=16*Math.pow(Math.sin(t),3)*s;
+  home[i*3+1]=(13*Math.cos(t)-5*Math.cos(2*t)-2*Math.cos(3*t)-Math.cos(4*t))*s+1;
+  home[i*3+2]=z;
+  for(let k=0;k<4;k++)R[i*4+k]=Math.random();
+  const c=pal[Math.random()*pal.length|0],m=.5+Math.random()*.5;
+  C[i*3]=c.r*m;C[i*3+1]=c.g*m;C[i*3+2]=c.b*m;
+  Sz[i]=1+Math.random()*2.2;
+}
+const geo=new THREE.BufferGeometry();
+geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(N*3),3));
+geo.setAttribute('aHome',new THREE.BufferAttribute(home,3));
+geo.setAttribute('aR',new THREE.BufferAttribute(R,4));
+geo.setAttribute('aCol',new THREE.BufferAttribute(C,3));
+geo.setAttribute('aS',new THREE.BufferAttribute(Sz,1));
+const U={uT:{value:0},uB:{value:-1},uForm:{value:0},uPix:{value:renderer.getPixelRatio()}};
+const mat=new THREE.ShaderMaterial({
+  uniforms:U,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+  vertexShader:`
+  attribute vec3 aHome;attribute vec4 aR;attribute vec3 aCol;attribute float aS;
+  uniform float uT,uB,uForm,uPix;
+  varying vec3 vC;varying float vA;
+  void main(){
+    float idle=uB<0.?1.:0.;
+    float beat=1.+.035*idle*pow(max(0.,sin(uT*5.)),6.);
+    vec3 h=aHome*beat;
+    h+=.12*vec3(sin(uT*(.6+aR.x)+aR.y*6.28),cos(uT*(.6+aR.y)+aR.z*6.28),sin(uT*(.6+aR.z)+aR.x*6.28));
+    float b=max(uB,0.);
+    vec3 dir=normalize(h-vec3(0.,-6.,0.)+(aR.xyz-.5)*6.);
+    float go=(1.-exp(-b*2.8))*(1.-idle);
+    float ret=smoothstep(.9+aR.x*.9,2.7+aR.x*1.3,b);
+    float k=go*(1.-ret);
+    vec3 far=h+dir*(4.+aR.w*20.)+vec3(0.,3.,0.);
+    vec3 side=normalize(cross(dir,vec3(0.,1.,0.))+1e-4);
+    far+=side*sin(b*3.+aR.y*6.28)*3.;
+    vec3 p=mix(h,far,k);
+    float f=smoothstep(aR.z*.55,1.,uForm);f=f*f*(3.-2.*f);
+    vec3 st=vec3((aR.x-.5)*9.,-19.,(aR.y-.5)*9.);
+    vec3 q=mix(st,p,f);
+    q.x+=sin(f*6.28+aR.w*6.28)*(1.-f)*3.;
+    vec4 mv=modelViewMatrix*vec4(q,1.);
+    gl_Position=projectionMatrix*mv;
+    float tw=.6+.4*sin(uT*3.*(.5+aR.w)+aR.x*20.);
+    gl_PointSize=aS*uPix*(45./-mv.z)*(1.+k*.6);
+    vC=aCol*(1.+k*1.5);
+    vA=tw*(.35+.65*smoothstep(0.,.3,f));
+  }`,
+  fragmentShader:`
+  varying vec3 vC;varying float vA;
+  void main(){
+    float d=length(gl_PointCoord-.5);
+    float a=smoothstep(.5,0.,d);a*=a;
+    gl_FragColor=vec4(vC*vA*1.4,a);
+  }`
+});
+scene.add(new THREE.Points(geo,mat));
+
+// ---- glowing base
+const BU={uT:U.uT,uG:{value:1}};
+const base=new THREE.Mesh(new THREE.PlaneGeometry(30,30),new THREE.ShaderMaterial({
+  uniforms:BU,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending,
+  vertexShader:`varying vec2 vUv;void main(){vUv=uv;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}`,
+  fragmentShader:`
+  uniform float uT,uG;varying vec2 vUv;
+  void main(){
+    float r=length(vUv-.5)*2.;if(r>1.)discard;
+    float core=exp(-r*r*4.5);
+    float ring=pow(.5+.5*sin(r*26.-uT*3.),6.)*(1.-r)*.9;
+    vec3 c=vec3(.05,.55,1.)*core*1.1+vec3(.3,.8,1.)*ring;
+    gl_FragColor=vec4(c*uG,1.);
+  }`
+}));
+base.rotation.x=-Math.PI/2;base.position.y=-19;scene.add(base);
+
+// ---- post processing
+const composer=new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene,camera));
+const after=new AfterimagePass(.8);composer.addPass(after);
+const bloom=new UnrealBloomPass(new THREE.Vector2(innerWidth,innerHeight),1.2,.6,0);
+composer.addPass(bloom);composer.addPass(new OutputPass());
+
+addEventListener('resize',()=>{
+  renderer.setSize(innerWidth,innerHeight);composer.setSize(innerWidth,innerHeight);fit();
+});
+
+// ---- cycle: form -> idle -> burst -> return -> idle
+const clock=new THREE.Clock();
+let bT=-1,nextB=6,damp=.8,downX=0,downY=0,downT=0;
+const el=renderer.domElement;
+el.addEventListener('pointerdown',e=>{downX=e.clientX;downY=e.clientY;downT=performance.now()});
+el.addEventListener('pointerup',e=>{
+  const moved=Math.hypot(e.clientX-downX,e.clientY-downY);
+  if(moved<8&&performance.now()-downT<350&&bT<0&&clock.elapsedTime>3.4)bT=clock.elapsedTime;
+});
+
+function loop(){
+  requestAnimationFrame(loop);
+  const T=clock.getElapsedTime();
+  U.uT.value=T;U.uForm.value=Math.min(1,T/3.4);
+  if(bT<0&&T>nextB&&!calm)bT=T;
+  let b=bT<0?-1:T-bT;
+  if(b>4){bT=-1;b=-1;nextB=T+3.6;}
+  U.uB.value=b;
+  const flying=b>=0&&b<1.8;
+  damp+=((flying?.93:.8)-damp)*.1;after.uniforms['damp'].value=damp;
+  bloom.strength=1.15+(b>=0&&b<2?Math.exp(-b*1.4)*1.4:0);
+  BU.uG.value=1+(b>=0&&b<2.5?Math.exp(-b*1.2)*1.5:0);
+  controls.update();
+  composer.render();
+}
+loop();
+</script>
+</body>
+</html>
